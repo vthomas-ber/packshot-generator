@@ -13,7 +13,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.7
       - key: GEMINI_IMAGE_MODEL
-        value: gemini-2.5-flash-image
+        value: gemini-3-pro-image
       - key: SECRET_KEY
         generateValue: true
       - key: GEMINI_API_KEY
