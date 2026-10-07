@@ -10,7 +10,7 @@ import time
 
 from PIL import Image
 
-MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 
 PROMPT = """You are a product retoucher preparing a packshot.
 Return ONE image: the single main retail product from this photo, isolated on a
