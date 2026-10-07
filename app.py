@@ -9,7 +9,7 @@ Environment variables (set in Render, never in code):
     GEMINI_API_KEY      Gemini API key
     APP_PASSWORD        shared password for users
     SECRET_KEY          random string for login sessions
-    GEMINI_IMAGE_MODEL  optional, defaults to gemini-2.5-flash-image
+    GEMINI_IMAGE_MODEL  optional, defaults to gemini-3-pro-image
 """
 import base64
 import hmac
