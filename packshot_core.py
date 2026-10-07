@@ -16,6 +16,13 @@ BOTTOM = 1290                  # baseline the products stand on
 TOP_LIMIT = 0.65               # products + shadows stay within top 65%
 SIDE_MARGIN = 160              # minimum left/right margin
 BG_TOLERANCE = 14              # max per-channel diff to count as background
+KEY_TOLERANCE = 70             # same, for Gemini's coloured key background
+LOST_LIMIT = 0.003             # >0.3% of the product dropped = cut-out is suspect
+
+# Background colours Gemini can be asked to use. The one least present in the
+# product is chosen, so it can be removed without touching the pack.
+KEY_COLOURS = {"bright green": (0, 255, 0), "magenta": (255, 0, 255),
+               "pure blue": (0, 0, 255)}
 MAX_INPUT_SIDE = 1400          # downscale large uploads to save memory
 
 # Image decoding and cut-outs are memory-heavy, so they run one at a time even
@@ -47,19 +54,39 @@ def plain_background(im):
     return uniform > 0.85 and bgc.mean() > 200
 
 
-def cut_out(im):
-    """Return an RGBA cutout of the product on a plain light background."""
+def pick_key_colour(im):
+    """Name and RGB of the key colour that appears least in the product."""
+    small = np.asarray(im.resize((120, 120))).astype(np.int16).reshape(-1, 3)
+    best, best_score = None, None
+    for name, rgb in KEY_COLOURS.items():
+        near = (np.abs(small - np.array(rgb)).max(-1) < KEY_TOLERANCE + 20).mean()
+        if best_score is None or near < best_score:
+            best, best_score = (name, rgb), near
+    return best
+
+
+def cut_out(im, tolerance=BG_TOLERANCE, erode=0):
+    """Return an RGBA cutout of the product (see cut_out_checked)."""
+    return cut_out_checked(im, tolerance, erode)[0]
+
+
+def cut_out_checked(im, tolerance=BG_TOLERANCE, erode=0):
+    """Return (RGBA cutout, share of product pixels that had to be dropped).
+
+    A high share means parts of the pack matched the background colour (for
+    example a white label touching a white background) and were cut away.
+    """
     with cpu_lock:
-        return _cut_out(im)
+        return _cut_out(im, tolerance, erode)
 
 
-def _cut_out(im):
+def _cut_out(im, tolerance, erode):
     im.thumbnail((MAX_INPUT_SIDE, MAX_INPUT_SIDE), Image.LANCZOS)
     a = np.asarray(im)
     bgc = np.median(_border(a), axis=0).astype(np.int16)
     close = np.ones(a.shape[:2], dtype=bool)
     for ch in range(3):                         # per channel keeps memory low
-        close &= np.abs(a[..., ch].astype(np.int16) - bgc[ch]) < BG_TOLERANCE
+        close &= np.abs(a[..., ch].astype(np.int16) - bgc[ch]) < tolerance
     del a
     lab, _ = ndi.label(close)
     edge = set(np.unique(np.concatenate(
@@ -72,14 +99,17 @@ def _cut_out(im):
     if n == 0:
         raise ValueError("no product found")
     sizes = ndi.sum(fg, lbl, range(1, n + 1))
+    lost = 1 - sizes.max() / sizes.sum()
     fg = lbl == (np.argmax(sizes) + 1)
+    if erode:                                   # trim the colour fringe at the edge
+        fg = ndi.binary_erosion(fg, iterations=erode)
 
     mask = Image.fromarray((fg * 255).astype(np.uint8)).filter(
         ImageFilter.GaussianBlur(0.8))
     out = im.convert("RGBA")
     out.putalpha(mask)
     bbox = mask.point(lambda v: 255 if v > 20 else 0).getbbox()
-    return out.crop(bbox)
+    return out.crop(bbox), float(lost)
 
 
 def compose(cutouts):

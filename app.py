@@ -66,14 +66,24 @@ def logout():
 def process_one(args):
     """Return (cutout, note) for one uploaded image."""
     name, data, force_gemini = args
+    reason = "background cleaned up by Gemini"
     with core.cpu_lock:
         im = core.load_image(io.BytesIO(data))
         del data
         if not force_gemini and core.plain_background(im):
-            return core.cut_out(im), f"{name}: already on a clean background, used as is"
+            cut, lost = core.cut_out_checked(im.copy())
+            if lost < core.LOST_LIMIT:
+                return cut, f"{name}: already on a clean background, used as is"
+            # light parts of the pack touched the background; let Gemini isolate it
+            reason = "light parts of the pack blended into the background, so Gemini isolated it"
+        key_name, key_rgb = core.pick_key_colour(im)
     try:
-        cleaned = gemini_clean.clean(im)
-        return core.cut_out(cleaned), f"{name}: background cleaned up by Gemini"
+        cleaned = gemini_clean.clean(im, key_name, key_rgb)
+        cut, lost = core.cut_out_checked(cleaned, core.KEY_TOLERANCE, erode=1)
+        note = f"{name}: {reason}"
+        if lost >= 0.02:
+            note += "; some parts may be missing, check result"
+        return cut, note
     except Exception as e:  # fall back so one bad image doesn't block the rest
         return core.cut_out(im), f"{name}: Gemini clean-up failed ({e}); original used, check result"
 
