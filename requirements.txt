@@ -1,0 +1,6 @@
+flask>=3.0
+gunicorn>=22.0
+pillow>=10.0
+numpy>=1.26
+scipy>=1.11
+google-genai>=1.0
