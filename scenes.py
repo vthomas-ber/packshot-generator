@@ -158,7 +158,7 @@ _BOX = None
 RIM = [(0, 257), (48, 260), (688, 300), (1023, 180), (1024, 180)]
 RIM_Y = 285          # typical rim height, used for placement
 OPENING = (205, 860)  # x range of the opening in box pixels
-BOX_SCALE = 1.42
+BOX_SCALE = 1.20      # box ~57% of the canvas width; rim at ~70% height
 
 
 def _box_layers():
@@ -175,6 +175,30 @@ def _box_layers():
     return _BOX
 
 
+# Cluster layouts per product count: (x offset in opening half-widths from the
+# opening centre, visible-bottom height above the rim in product sizes; 0 = at
+# the rim, negative values dip into the box, positive values float above it).
+SLOTS = {
+    1: [(0.0, 0.35)],
+    2: [(-0.42, 0.55), (0.42, 0.15)],
+    3: [(-0.62, 0.35), (0.0, 0.95), (0.62, 0.20)],
+    4: [(-0.70, 0.55), (-0.18, 1.05), (0.30, 0.05), (0.78, 0.50)],
+    5: [(-0.78, 0.45), (-0.36, 1.15), (0.08, 0.02), (0.48, 0.95), (0.84, 0.30)],
+    6: [(-0.82, 0.40), (-0.46, 1.20), (-0.10, 0.05), (0.26, 1.05), (0.58, 0.02), (0.88, 0.55)],
+}
+TILTS = [-13, 9, -5, 12, -9, 6]
+
+
+def _fit(c, size):
+    """Resize to a target visual weight (sqrt of area), not a fixed height,
+    so a wide bar and a slim carton look equally important."""
+    r = c.width / c.height
+    w, h = size * math.sqrt(r), size / math.sqrt(r)
+    # keep extreme shapes in check
+    k = min(1.0, 1.40 * size / h, 1.75 * size / w)
+    return c.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+
+
 def compose_surprise(cutouts):
     """Products dropping into the TGTG box. The box image is never altered."""
     box, front = _box_layers()
@@ -184,33 +208,33 @@ def compose_surprise(cutouts):
     front_s = front.resize((bw, bh), Image.LANCZOS)
     bx = (W - bw) // 2 + round((box.width / 2 - 516) * s)   # centre the visible box
     by = H - bh                                              # bleeds off the bottom
-    rim_y = by + round(RIM_Y * s)                            # ~65% of the canvas
+    rim_y = by + RIM_Y * s
 
     canvas = Image.new("RGB", (W, H), BG)
     canvas.paste(box_s, (bx, by), box_s)
 
     n = len(cutouts)
-    ox0, ox1 = bx + OPENING[0] * s, bx + OPENING[1] * s
-    span = ox1 - ox0
-    tilt = [-11, 8, -5, 13, -8, 4]
-    dip = [0.16, -0.10, 0.22, 0.06, 0.12, -0.12]           # share of h below the rim
+    slots = SLOTS[min(n, 6)]
+    cx0 = bx + (OPENING[0] + OPENING[1]) / 2 * s
+    half = (OPENING[1] - OPENING[0]) / 2 * s
 
-    ratios = [c.width / c.height for c in cutouts]
-    h = int(min(H * 0.44, (span * 1.25) / max(sum(ratios), 0.1),
-                (rim_y - H * 0.06) / (1 - min(dip[:n]) + 0.15)))
+    # Product size: shrink with count, and so the highest product stays in frame.
+    size = min(H * 0.30, half * 3.6 / (n * 0.7 + 0.8))
+    spread = 1.0 if n <= 3 else 1.22          # bigger groups fan out past the flaps
+    top_room = rim_y - H * 0.04
+    size = min(size, top_room / (max(b for _, b in slots) + 1.45))
 
-    order = list(range(n))
-    centres = [ox0 + span * (i + 0.5) / n for i in range(n)]
-    # draw outer products first so central ones overlap them slightly
-    order.sort(key=lambda i: -abs(i - (n - 1) / 2))
-    for i in order:
-        c = cutouts[i]
-        im = c.resize((max(1, round(c.width * h / c.height)), h), Image.LANCZOS)
-        im = im.rotate(tilt[i % len(tilt)], resample=Image.BICUBIC, expand=True)
-        bottom = rim_y + h * dip[i % len(dip)]
-        x = int(centres[i] - im.width / 2)
-        y = int(bottom - im.height)
-        # soft shadow to separate overlapping packs
+    placed = []
+    for i, c in enumerate(cutouts):
+        im = _fit(c, size).rotate(TILTS[i % len(TILTS)], resample=Image.BICUBIC, expand=True)
+        dx, up = slots[i]
+        x = int(cx0 + dx * half * spread - im.width / 2)
+        x = max(int(W * 0.04), min(x, int(W * 0.96) - im.width))
+        y = int(rim_y - up * size - im.height)
+        placed.append((up, x, y, im))
+
+    # Higher products are further back; lower ones (in the box) go on top.
+    for up, x, y, im in sorted(placed, key=lambda p: -p[0]):
         sh = im.split()[-1].filter(ImageFilter.GaussianBlur(10)).point(lambda v: int(v * 0.22))
         canvas.paste((40, 40, 40), (x + 8, y + 14, x + 8 + im.width, y + 14 + im.height), sh)
         canvas.paste(im, (x, y), im)
