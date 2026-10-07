@@ -20,13 +20,23 @@ from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
+import jinja2
+
 import gemini_clean
 import packshot_core as core
+import scenes
 
-MAX_FILES = 8
+MAX_FILES = {"neutral": 8, "tray": 6, "surprise": 6}
 ALLOWED = {".png", ".jpg", ".jpeg", ".webp"}
 
 app = Flask(__name__)
+# Page templates may sit next to app.py or in templates/; the top-level copy
+# wins, so a re-uploaded index.html works wherever GitHub puts it.
+_here = os.path.dirname(os.path.abspath(__file__))
+app.jinja_loader = jinja2.ChoiceLoader([
+    jinja2.FileSystemLoader(_here),
+    jinja2.FileSystemLoader(os.path.join(_here, "templates")),
+])
 app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(32)
 app.config["MAX_CONTENT_LENGTH"] = 80 * 1024 * 1024
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -93,14 +103,32 @@ def generate():
     if not logged_in():
         return jsonify(error="Please log in again."), 401
 
+    mode = request.form.get("mode", "neutral")
+    if mode not in MAX_FILES:
+        return jsonify(error="Unknown mode."), 400
+    limit = MAX_FILES[mode]
+
     files = [f for f in request.files.getlist("images") if f and f.filename]
     if not files:
         return jsonify(error="Add at least one image."), 400
-    if len(files) > MAX_FILES:
-        return jsonify(error=f"Maximum {MAX_FILES} images per packshot."), 400
+    if len(files) > limit:
+        what = "product types" if mode == "tray" else "images"
+        return jsonify(error=f"{mode.title()} mode takes up to {limit} {what}."), 400
     for f in files:
         if os.path.splitext(f.filename.lower())[1] not in ALLOWED:
             return jsonify(error=f"{f.filename}: use PNG, JPG or WEBP."), 400
+
+    units = 0
+    if mode == "tray":
+        try:
+            units = int(request.form.get("units", "6"))
+        except ValueError:
+            units = 0
+        if not 2 <= units <= scenes.MAX_UNITS:
+            return jsonify(error=f"Units must be between 2 and {scenes.MAX_UNITS}."), 400
+        if units < len(files):
+            return jsonify(error=f"{units} units can't show {len(files)} product types. "
+                                 "Add units or remove photos."), 400
 
     force = request.form.get("force_gemini") == "1"
     jobs = [(f.filename, f.read(), force) for f in files]
@@ -111,8 +139,17 @@ def generate():
         return jsonify(error=f"Could not process the images: {e}"), 500
 
     del jobs
+    cutouts = [c for c, _ in results]
+    notes = [n for _, n in results]
     with core.cpu_lock:
-        packshot = core.compose([c for c, _ in results])
+        if mode == "tray":
+            packshot, counts = scenes.compose_tray(cutouts, units)
+            split = ", ".join(f"{n} × {f.filename}" for n, f in zip(counts, files))
+            notes.insert(0, f"Tray with {units} units: {split}")
+        elif mode == "surprise":
+            packshot = scenes.compose_surprise(cutouts)
+        else:
+            packshot = core.compose(cutouts)
         buf = io.BytesIO()
         packshot.save(buf, "PNG")
         del packshot
@@ -120,8 +157,8 @@ def generate():
     item = re.sub(r"[^A-Za-z0-9_-]+", "", request.form.get("item_id", ""))[:60]
     return jsonify(
         image="data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(),
-        filename=f"{item or 'packshot'}_packshot.png",
-        notes=[n for _, n in results],
+        filename=f"{item or 'packshot'}_{mode}.png",
+        notes=notes,
     )
 
 

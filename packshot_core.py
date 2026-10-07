@@ -1,6 +1,6 @@
 """
 Deterministic packshot layout: cut products out of plain light backgrounds and
-place them on a flat #FAFAFA 16:9 canvas with soft, identical shadows.
+place them on a flat #FAFAFA 2160x1280 canvas with soft, identical shadows.
 """
 import threading
 
@@ -8,13 +8,13 @@ import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 from scipy import ndimage as ndi
 
-W, H = 3840, 2160              # 16:9 output
+W, H = 2160, 1280              # output canvas, same for every mode
 BG = (250, 250, 250)           # #FAFAFA
-MAX_PRODUCT_H = 1000           # product height in px
-GAP = 80                       # space between products
-BOTTOM = 1290                  # baseline the products stand on
+MAX_PRODUCT_H = 593            # product height in px (neutral mode)
+GAP = 45                       # space between products
+BOTTOM = 764                   # baseline the products stand on
 TOP_LIMIT = 0.65               # products + shadows stay within top 65%
-SIDE_MARGIN = 160              # minimum left/right margin
+SIDE_MARGIN = 90               # minimum left/right margin
 BG_TOLERANCE = 14              # max per-channel diff to count as background
 KEY_TOLERANCE = 70             # same, for Gemini's coloured key background
 LOST_LIMIT = 0.003             # >0.3% of the product dropped = cut-out is suspect
@@ -113,14 +113,14 @@ def _cut_out(im, tolerance, erode):
 
 
 def compose(cutouts):
-    """Lay cutouts out left-to-right on the canvas."""
+    """Neutral mode: lay cutouts out left-to-right on the canvas."""
     n = len(cutouts)
     ratios = [c.width / c.height for c in cutouts]
     usable_w = W - 2 * SIDE_MARGIN - GAP * (n - 1)
     h = int(min(MAX_PRODUCT_H, usable_w / sum(ratios)))
-    bottom = min(BOTTOM, int(H * TOP_LIMIT) - 40)
-    if bottom - h < 40:
-        h = bottom - 40
+    bottom = min(BOTTOM, int(H * TOP_LIMIT) - 24)
+    if bottom - h < 24:
+        h = bottom - 24
 
     ims = [c.resize((max(1, round(c.width * h / c.height)), h), Image.LANCZOS)
            for c in cutouts]
@@ -136,14 +136,14 @@ def compose(cutouts):
     for im in ims:
         positions.append((x, bottom - h))
         cx = x + im.width / 2
-        ds.ellipse([cx - im.width * 0.46, bottom - 14,
-                    cx + im.width * 0.46, bottom + 30], fill=110)
-        dc.ellipse([x + im.width * 0.08, bottom - 6,
-                    x + im.width * 0.92, bottom + 10], fill=90)
+        ds.ellipse([cx - im.width * 0.46, bottom - 8,
+                    cx + im.width * 0.46, bottom + 18], fill=110)
+        dc.ellipse([x + im.width * 0.08, bottom - 4,
+                    x + im.width * 0.92, bottom + 6], fill=90)
         x += im.width + GAP
 
-    shadow = ImageChops.lighter(shadow.filter(ImageFilter.GaussianBlur(22)),
-                                contact.filter(ImageFilter.GaussianBlur(7)))
+    shadow = ImageChops.lighter(shadow.filter(ImageFilter.GaussianBlur(13)),
+                                contact.filter(ImageFilter.GaussianBlur(4)))
     del contact
     shadow = shadow.point(lambda v: int(v * 0.55))
     canvas.paste((60, 60, 60), (0, 0, W, H), shadow)   # dark tint through the shadow mask
