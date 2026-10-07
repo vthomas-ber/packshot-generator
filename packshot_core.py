@@ -2,6 +2,8 @@
 Deterministic packshot layout: cut products out of plain light backgrounds and
 place them on a flat #FAFAFA 16:9 canvas with soft, identical shadows.
 """
+import threading
+
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 from scipy import ndimage as ndi
@@ -14,11 +16,16 @@ BOTTOM = 1290                  # baseline the products stand on
 TOP_LIMIT = 0.65               # products + shadows stay within top 65%
 SIDE_MARGIN = 160              # minimum left/right margin
 BG_TOLERANCE = 14              # max per-channel diff to count as background
-MAX_INPUT_SIDE = 2000          # downscale large uploads to save memory
+MAX_INPUT_SIDE = 1400          # downscale large uploads to save memory
+
+# Image decoding and cut-outs are memory-heavy, so they run one at a time even
+# when Gemini calls run in parallel. Keeps peak memory inside a 512 MB instance.
+cpu_lock = threading.RLock()
 
 
 def load_image(fp):
     im = Image.open(fp)
+    im.draft("RGB", (MAX_INPUT_SIDE, MAX_INPUT_SIDE))   # JPEGs decode at reduced size
     im = im.convert("RGBA") if im.mode in ("RGBA", "LA", "P") else im.convert("RGB")
     if im.mode == "RGBA":                       # flatten transparency onto white
         flat = Image.new("RGB", im.size, (255, 255, 255))
@@ -28,10 +35,13 @@ def load_image(fp):
     return im
 
 
+def _border(a):
+    return np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]).astype(np.int16)
+
+
 def plain_background(im):
     """True if the photo sits on a plain, light, uniform background."""
-    a = np.asarray(im).astype(int)
-    border = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]])
+    border = _border(np.asarray(im))
     bgc = np.median(border, axis=0)
     uniform = (np.abs(border - bgc).max(-1) < BG_TOLERANCE).mean()
     return uniform > 0.85 and bgc.mean() > 200
@@ -39,10 +49,18 @@ def plain_background(im):
 
 def cut_out(im):
     """Return an RGBA cutout of the product on a plain light background."""
-    a = np.asarray(im).astype(int)
-    border = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]])
-    bgc = np.median(border, axis=0)
-    close = np.abs(a - bgc).max(-1) < BG_TOLERANCE
+    with cpu_lock:
+        return _cut_out(im)
+
+
+def _cut_out(im):
+    im.thumbnail((MAX_INPUT_SIDE, MAX_INPUT_SIDE), Image.LANCZOS)
+    a = np.asarray(im)
+    bgc = np.median(_border(a), axis=0).astype(np.int16)
+    close = np.ones(a.shape[:2], dtype=bool)
+    for ch in range(3):                         # per channel keeps memory low
+        close &= np.abs(a[..., ch].astype(np.int16) - bgc[ch]) < BG_TOLERANCE
+    del a
     lab, _ = ndi.label(close)
     edge = set(np.unique(np.concatenate(
         [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
@@ -79,10 +97,10 @@ def compose(cutouts):
     total = sum(i.width for i in ims) + GAP * (n - 1)
     x = (W - total) // 2
 
-    canvas = Image.new("RGBA", (W, H), BG + (255,))
-    soft = Image.new("L", (W, H), 0)
+    canvas = Image.new("RGB", (W, H), BG)
+    shadow = Image.new("L", (W, H), 0)
     contact = Image.new("L", (W, H), 0)
-    ds, dc = ImageDraw.Draw(soft), ImageDraw.Draw(contact)
+    ds, dc = ImageDraw.Draw(shadow), ImageDraw.Draw(contact)
 
     positions = []
     for im in ims:
@@ -94,11 +112,12 @@ def compose(cutouts):
                     x + im.width * 0.92, bottom + 10], fill=90)
         x += im.width + GAP
 
-    soft = soft.filter(ImageFilter.GaussianBlur(22))
-    contact = contact.filter(ImageFilter.GaussianBlur(7))
-    shadow = ImageChops.lighter(soft, contact).point(lambda v: int(v * 0.55))
-    dark = Image.new("RGBA", (W, H), (60, 60, 60, 255))
-    canvas = Image.composite(dark, canvas, shadow)
+    shadow = ImageChops.lighter(shadow.filter(ImageFilter.GaussianBlur(22)),
+                                contact.filter(ImageFilter.GaussianBlur(7)))
+    del contact
+    shadow = shadow.point(lambda v: int(v * 0.55))
+    canvas.paste((60, 60, 60), (0, 0, W, H), shadow)   # dark tint through the shadow mask
+    del shadow
     for (px, py), im in zip(positions, ims):
-        canvas.alpha_composite(im, (px, py))
-    return canvas.convert("RGB")
+        canvas.paste(im, (px, py), im)
+    return canvas
